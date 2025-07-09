@@ -17,17 +17,35 @@ export default function LinkSeniors() {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const isSenior = user?.role === "senior";
+  const [isSenior, setIsSenior] = useState<boolean>(false);
+
 
   useEffect(() => {
-    navigation.setOptions({
-      headerShown: true,
-      title: isSenior ? "Link Family Member" : "Link Senior User",
-      headerTitleAlign: "center",
-      headerBackVisible: false,
-    });
+    const getUser = async () => {
+      const user = await getCurrentUser();
+      const { data: userData, error } = await supabase
+        .from("users")
+        .select("*")
+        .eq("id", user?.id)
+        .single();
 
+      if (error) {
+        Alert.alert("Error", "Error fetching user data");
+        return null;
+      }
+
+      setUser(userData);
+      setIsSenior(userData?.role === "senior");
+      return userData;
+    };
+
+    getUser();
+    navigation.setOptions({
+      headerShown: false
+    });
   }, []);
+
+
 
   const getCurrentUser = async () => {
     const {
@@ -107,8 +125,8 @@ export default function LinkSeniors() {
     }
 
     const oppositeUser = await findOppositeUser(email.trim().toLowerCase(), currentUser.id);
-    if (!oppositeUser) {
-      Alert.alert("Not Found", "No user found with that email.");
+    if (!oppositeUser || oppositeUser.role === user?.role) {
+      Alert.alert("Not Found", "No opposite user found with that email.");
       setLoading(false);
       return;
     }
@@ -160,7 +178,7 @@ export default function LinkSeniors() {
   };
 
   const handleSkip = () => {
-    router.replace("/");
+    router.replace("/home/medications");
   };
 
   return (
