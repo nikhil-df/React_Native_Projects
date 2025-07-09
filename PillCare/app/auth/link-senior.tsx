@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase";
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useNavigation, useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
 import {
   Alert,
@@ -11,15 +11,13 @@ import {
 } from "react-native";
 
 export default function LinkSeniors() {
-  const params = useLocalSearchParams();
-  const userType = params.userType as "user" | "Family Member";
+  const [user, setUser] = useState<any>(null);
   const navigation = useNavigation();
   const router = useRouter();
-
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const isSenior = userType === "user";
+  const isSenior = user?.role === "senior";
 
   useEffect(() => {
     navigation.setOptions({
@@ -28,7 +26,64 @@ export default function LinkSeniors() {
       headerTitleAlign: "center",
       headerBackVisible: false,
     });
+
   }, []);
+
+  const getCurrentUser = async () => {
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
+
+    if (error || !user) return null;
+    return user;
+  };
+
+  const isSelfLink = (currentUserEmail: string, targetEmail: string) => {
+    return currentUserEmail.toLowerCase() === targetEmail.toLowerCase();
+  };
+
+  const findOppositeUser = async (email: string, currentUserId: string) => {
+    const { data, error } = await supabase
+      .from("users")
+      .select("id, role")
+      .eq("email", email)
+      .neq("id", currentUserId)
+      .maybeSingle();
+
+    return error ? null : data;
+  };
+
+  const hasExistingLink = async (currentUserId: string) => {
+    const { data } = await supabase
+      .from("links")
+      .select("*")
+      .or(`senior_id.eq.${currentUserId},family_id.eq.${currentUserId}`);
+    return data ?? [];
+  };
+
+  const deleteExistingLinks = async (currentUserId: string) => {
+    const { error } = await supabase
+      .from("links")
+      .delete()
+      .or(`senior_id.eq.${currentUserId},family_id.eq.${currentUserId}`);
+    return error;
+  };
+
+  const createNewLink = async (
+    currentUserId: string,
+    oppositeUserId: string,
+    currentIsSenior: boolean
+  ) => {
+    const { error } = await supabase.from("links").insert({
+      senior_id: currentIsSenior ? currentUserId : oppositeUserId,
+      family_id: currentIsSenior ? oppositeUserId : currentUserId,
+      consent_settings: { requested_by: currentIsSenior ? "senior" : "family" },
+      linked_at: null,
+    });
+
+    return error;
+  };
 
   const handleLink = async () => {
     if (!email.trim()) {
@@ -38,46 +93,41 @@ export default function LinkSeniors() {
 
     setLoading(true);
 
-    const {
-      data: { user: currentUser },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !currentUser) {
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       Alert.alert("Error", "Unable to get current user.");
       setLoading(false);
       return;
     }
 
-    if (email.trim().toLowerCase() === currentUser.email?.toLowerCase()) {
+    if (isSelfLink(currentUser.email ?? "", email)) {
       Alert.alert("Invalid", "You cannot link with your own email.");
       setLoading(false);
       return;
     }
 
-    const { data: oppositeUser, error: lookupError } = await supabase
-      .from("users")
-      .select("id, role")
-      .eq("email", email.trim().toLowerCase())
-      .neq("id", currentUser.id)
-      .maybeSingle();
-
-    if (lookupError || !oppositeUser) {
+    const oppositeUser = await findOppositeUser(email.trim().toLowerCase(), currentUser.id);
+    if (!oppositeUser) {
       Alert.alert("Not Found", "No user found with that email.");
       setLoading(false);
       return;
     }
 
+    const existingLinks = await hasExistingLink(currentUser.id);
     const isCurrentUserSenior = isSenior;
-    const currentUserField = isCurrentUserSenior ? "senior_id" : "family_id";
 
-    // Check for existing links
-    const { data: existingLinksRaw } = await supabase
-      .from("links")
-      .select("*")
-      .or(`senior_id.eq.${currentUser.id},family_id.eq.${currentUser.id}`);
+    const proceedWithLink = async () => {
+      const error = await createNewLink(currentUser.id, oppositeUser.id, isCurrentUserSenior);
+      setLoading(false);
 
-    const existingLinks = existingLinksRaw ?? [];
+      if (error) {
+        Alert.alert("Error", "Failed to send link request.");
+      } else {
+        Alert.alert("Success", "Link request sent.");
+        setEmail("");
+        router.replace("/");
+      }
+    };
 
     if (existingLinks.length > 0) {
       Alert.alert(
@@ -93,62 +143,24 @@ export default function LinkSeniors() {
             text: "Replace",
             style: "destructive",
             onPress: async () => {
-              const { error: deleteError } = await supabase
-                .from("links")
-                .delete()
-                .or(
-                  `senior_id.eq.${currentUser.id},family_id.eq.${currentUser.id}`
-                );
-
-              if (deleteError) {
+              const error = await deleteExistingLinks(currentUser.id);
+              if (error) {
                 Alert.alert("Error", "Failed to remove previous link.");
                 setLoading(false);
-                return;
+              } else {
+                await proceedWithLink();
               }
-
-              await createNewLink(
-                currentUser.id,
-                oppositeUser.id,
-                isCurrentUserSenior
-              );
             },
           },
         ]
       );
     } else {
-      await createNewLink(
-        currentUser.id,
-        oppositeUser.id,
-        isCurrentUserSenior
-      );
-    }
-  };
-
-  const createNewLink = async (
-    currentUserId: string,
-    oppositeUserId: string,
-    currentIsSenior: boolean
-  ) => {
-    const { error: insertError } = await supabase.from("links").insert({
-      senior_id: currentIsSenior ? currentUserId : oppositeUserId,
-      family_id: currentIsSenior ? oppositeUserId : currentUserId,
-      consent_settings: { requested_by: currentIsSenior ? "senior" : "family" },
-      linked_at: null,
-    });
-
-    setLoading(false);
-
-    if (insertError) {
-      Alert.alert("Error", "Failed to send link request.");
-    } else {
-      Alert.alert("Success", "Link request sent.");
-      setEmail("");
-      router.replace("/"); // 🔁 Redirect after success
+      await proceedWithLink();
     }
   };
 
   const handleSkip = () => {
-    router.replace("/"); // 👈 Redirect senior who wants to skip
+    router.replace("/");
   };
 
   return (
